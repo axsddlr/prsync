@@ -161,11 +161,7 @@ class ParallelRsync:
         self.current_bucket_size = 0
         self.buckets: List[List[Path]] = []
 
-        logging.basicConfig(
-            level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-        )
         self.logger = logging.getLogger(__name__)
-
         self.progress_lock = Lock()
         self.total_files = 0
         self.completed_files = 0
@@ -424,6 +420,12 @@ class ParallelRsync:
                 self.logger.error(f"Job {job.job_id} failed with error: {error}")
 
 
+def setup_logging(level: int = logging.INFO):
+    logging.basicConfig(
+        level=level, format="%(asctime)s - %(levelname)s - %(message)s"
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Parallel rsync tool with SSH multiplexing"
@@ -447,8 +449,20 @@ def main():
         default="-avz --progress",
         help="Additional rsync arguments (default: -avz --progress)",
     )
+    parser.add_argument(
+        "-v", "--verbose", action="store_const", const=logging.DEBUG,
+        dest="log_level", default=logging.INFO,
+        help="Enable verbose (debug) logging output"
+    )
+    parser.add_argument(
+        "-q", "--quiet", action="store_const", const=logging.WARNING,
+        dest="log_level",
+        help="Suppress informational output"
+    )
 
     args = parser.parse_args()
+
+    setup_logging(level=args.log_level)
 
     try:
         parallel_rsync = ParallelRsync(
