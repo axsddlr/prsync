@@ -192,7 +192,9 @@ class ParallelRsync:
                 raise ValueError(f"Source directory does not exist: {source_base}")
             
             files = []
-            for root, _, filenames in os.walk(source_base):
+            for root, _, filenames in os.walk(source_base, onerror=lambda err: self.logger.error(
+                f"Error walking directory: {err}"
+            )):
                 for filename in filenames:
                     filepath = Path(root) / filename
                     try:
