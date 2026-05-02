@@ -68,6 +68,8 @@ class RemoteTarget:
             return True
         except subprocess.CalledProcessError as e:
             logging.error(f"Failed to setup SSH multiplexing: {e}")
+            self.control_path = None
+            shutil.rmtree(temp_dir, ignore_errors=True)
             return False
 
     def cleanup_ssh_multiplexing(self):
@@ -132,14 +134,22 @@ class ParallelRsync:
         # Setup SSH multiplexing for remote source
         if self.is_remote_source:
             if not self.remote_source.setup_ssh_multiplexing():
-                raise ValueError("Failed to setup SSH connection multiplexing for source")
-            atexit.register(self.remote_source.cleanup_ssh_multiplexing)
+                logging.warning(
+                    "SSH multiplexing setup failed for source, "
+                    "falling back to non-multiplexed SSH"
+                )
+            else:
+                atexit.register(self.remote_source.cleanup_ssh_multiplexing)
 
         # Setup SSH multiplexing for remote target
         if self.is_remote_target:
             if not self.remote_target.setup_ssh_multiplexing():
-                raise ValueError("Failed to setup SSH connection multiplexing")
-            atexit.register(self.remote_target.cleanup_ssh_multiplexing)
+                logging.warning(
+                    "SSH multiplexing setup failed for target, "
+                    "falling back to non-multiplexed SSH"
+                )
+            else:
+                atexit.register(self.remote_target.cleanup_ssh_multiplexing)
 
         self.current_bucket: List[Tuple[Path, int]] = []
         self.current_bucket_size = 0
