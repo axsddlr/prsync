@@ -18,6 +18,9 @@ import shlex
 import shutil
 import tempfile
 
+SSH_TIMEOUT = 300  # 5 minutes for SSH commands
+RSYNC_TIMEOUT = 3600  # 1 hour for rsync transfers
+
 
 @dataclass
 class RemoteTarget:
@@ -64,9 +67,9 @@ class RemoteTarget:
         )
 
         try:
-            subprocess.run(ssh_cmd, check=True)
+            subprocess.run(ssh_cmd, check=True, timeout=SSH_TIMEOUT)
             return True
-        except subprocess.CalledProcessError as e:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             logging.error(f"Failed to setup SSH multiplexing: {e}")
             self.control_path = None
             shutil.rmtree(temp_dir, ignore_errors=True)
@@ -84,8 +87,8 @@ class RemoteTarget:
             )
 
             try:
-                subprocess.run(ssh_cmd, check=True)
-            except subprocess.CalledProcessError:
+                subprocess.run(ssh_cmd, check=True, timeout=SSH_TIMEOUT)
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
                 pass
 
             if os.path.exists(os.path.dirname(self.control_path)):
@@ -181,13 +184,14 @@ class ParallelRsync:
         ssh_cmd.extend([remote.host, find_cmd])
         
         try:
-            result = subprocess.run(ssh_cmd, capture_output=True, text=True, check=True)
+            result = subprocess.run(ssh_cmd, capture_output=True, text=True,
+                                     check=True, timeout=SSH_TIMEOUT)
             files = []
             for line in result.stdout.splitlines():
                 size, path = line.strip().split(" ", 1)
                 files.append((path, int(size)))
             return files
-        except subprocess.CalledProcessError as e:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             self.logger.error(f"Failed to get remote file list: {e}")
             raise
 
@@ -243,12 +247,13 @@ class ParallelRsync:
         ssh_cmd.extend([self.remote_target.host, find_cmd])
 
         try:
-            result = subprocess.run(ssh_cmd, capture_output=True, text=True, check=True)
+            result = subprocess.run(ssh_cmd, capture_output=True, text=True,
+                                     check=True, timeout=SSH_TIMEOUT)
             self._remote_target_manifest = set(result.stdout.splitlines())
             self.logger.info(
                 f"Remote target manifest: {len(self._remote_target_manifest)} files"
             )
-        except subprocess.CalledProcessError as e:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             self.logger.error(f"Failed to build remote target manifest: {e}")
             raise
 
@@ -345,7 +350,13 @@ class ParallelRsync:
             )
             self._active_processes.append(process)
             try:
+                stdout, stderr = process.communicate(timeout=RSYNC_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                self.logger.error(f"Rsync timed out for job {job.job_id}")
+                process.kill()
                 stdout, stderr = process.communicate()
+                self.failed_transfers.put((job, stderr))
+                return False
             finally:
                 self._active_processes.remove(process)
 
