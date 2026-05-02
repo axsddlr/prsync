@@ -188,7 +188,14 @@ class ParallelRsync:
                 files.append((path, int(size)))
             return files
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            self.logger.error(f"Failed to get remote file list: {e}")
+            stderr_hint = getattr(e, 'stderr', '')
+            if stderr_hint and 'invalid predicate' in stderr_hint:
+                self.logger.error(
+                    "Failed to get remote file list: remote host does not support "
+                    "GNU find (required for -printf). Use a GNU/Linux remote host."
+                )
+            else:
+                self.logger.error(f"Failed to get remote file list: {e}")
             raise
 
     def scan_and_distribute(self):
