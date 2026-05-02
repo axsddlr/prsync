@@ -17,6 +17,8 @@ import atexit
 import shlex
 import shutil
 import tempfile
+import traceback
+import traceback
 
 SSH_TIMEOUT = 300  # 5 minutes for SSH commands
 RSYNC_TIMEOUT = 3600  # 1 hour for rsync transfers
@@ -108,7 +110,6 @@ class RsyncJob:
     target: str
     rsync_args: List[str]
     job_id: int
-    is_remote_target: bool
     control_path: Optional[str] = None
 
 
@@ -119,7 +120,7 @@ class ParallelRsync:
         target: str,
         parallel_jobs: int = 4,
         bucket_size_mb: int = 1000,
-        rsync_args: List[str] = None,
+        rsync_args: Optional[List[str]] = None,
     ):
         self.source = source_dir
         self.target = target
@@ -341,11 +342,11 @@ class ParallelRsync:
             )
             self._active_processes.append(process)
             try:
-                stdout, stderr = process.communicate(timeout=RSYNC_TIMEOUT)
+                _, stderr = process.communicate(timeout=RSYNC_TIMEOUT)
             except subprocess.TimeoutExpired:
                 self.logger.error(f"Rsync timed out for job {job.job_id}")
                 process.kill()
-                stdout, stderr = process.communicate()
+                _, stderr = process.communicate()
                 self.failed_transfers.put((job, stderr))
                 return False
             finally:
@@ -390,7 +391,6 @@ class ParallelRsync:
                 else str(self.target),
                 rsync_args=self.rsync_args,
                 job_id=i,
-                is_remote_target=self.is_remote_target,
                 control_path=self.remote_target.control_path
                 if self.is_remote_target
                 else None,
@@ -479,7 +479,8 @@ def main():
         print("\nOperation cancelled by user")
         sys.exit(1)
     except Exception as e:
-        print(f"Error: {e}")
+        logging.error(f"Error: {e}")
+        logging.debug(traceback.format_exc())
         sys.exit(1)
 
 
