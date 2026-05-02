@@ -155,6 +155,8 @@ class ParallelRsync:
         self.completed_files = 0
         self.failed_transfers = Queue()
         self._remote_target_manifest: Set[str] = set()
+        self._active_processes: List[subprocess.Popen] = []
+        atexit.register(self._terminate_all)
 
     def _get_remote_file_list(self, remote: RemoteTarget) -> List[Tuple[str, int]]:
         """Get list of files and sizes from remote host"""
@@ -240,6 +242,24 @@ class ParallelRsync:
             self.logger.error(f"Failed to build remote target manifest: {e}")
             raise
 
+    def _terminate_all(self):
+        """Terminate all active rsync subprocesses"""
+        procs = list(self._active_processes)
+        for proc in procs:
+            try:
+                proc.terminate()
+            except OSError:
+                pass
+        for proc in procs:
+            try:
+                proc.wait(timeout=5)
+            except (subprocess.TimeoutExpired, OSError):
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+        self._active_processes.clear()
+
     def execute_rsync(self, job: RsyncJob) -> bool:
         """Execute rsync for a given bucket of files"""
         files_to_sync = []
@@ -313,8 +333,11 @@ class ParallelRsync:
                 stderr=subprocess.PIPE,
                 universal_newlines=True,
             )
-
-            stdout, stderr = process.communicate()
+            self._active_processes.append(process)
+            try:
+                stdout, stderr = process.communicate()
+            finally:
+                self._active_processes.remove(process)
 
             if process.returncode != 0:
                 self.logger.error(f"Rsync failed for job {job.job_id}")
@@ -362,8 +385,15 @@ class ParallelRsync:
             )
             jobs.append(job)
 
-        with ThreadPoolExecutor(max_workers=self.parallel_jobs) as executor:
+        executor = ThreadPoolExecutor(max_workers=self.parallel_jobs)
+        try:
             results = list(executor.map(self.execute_rsync, jobs))
+        except KeyboardInterrupt:
+            self.logger.warning("Interrupted, terminating active transfers...")
+            self._terminate_all()
+            raise
+        finally:
+            executor.shutdown(wait=True)
 
         success_count = sum(1 for r in results if r)
         failed_count = len(results) - success_count
