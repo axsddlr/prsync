@@ -6,7 +6,7 @@ import argparse
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import List, Tuple, Optional
+from typing import List, Set, Tuple, Optional
 from dataclasses import dataclass
 import time
 import logging
@@ -147,6 +147,7 @@ class ParallelRsync:
         self.total_files = 0
         self.completed_files = 0
         self.failed_transfers = Queue()
+        self._remote_target_manifest: Set[str] = set()
 
     def _get_remote_file_list(self, remote: RemoteTarget) -> List[Tuple[str, int]]:
         """Get list of files and sizes from remote host"""
@@ -209,20 +210,26 @@ class ParallelRsync:
             f"Found {self.total_files} files in {len(self.buckets)} buckets"
         )
 
-    def _check_remote_file_exists(self, remote_path: str, job: RsyncJob) -> bool:
-        """Check if file exists on remote host"""
+    def _build_remote_target_manifest(self):
+        """Build a set of all file paths on the remote target for O(1) existence checks"""
+        base = self.remote_target.path.rstrip('/')
         ssh_cmd = ["ssh"]
-        if self.remote_target and self.remote_target.control_path:
+        if self.remote_target.control_path:
             ssh_cmd.extend(["-o", f"ControlPath={self.remote_target.control_path}"])
-        if self.remote_target and self.remote_target.user:
+        if self.remote_target.user:
             ssh_cmd.extend(["-l", self.remote_target.user])
-        ssh_cmd.extend([self.remote_target.host, f"test -f '{remote_path}' && echo 'exists'"])
-        
+        find_cmd = f"find {shlex.quote(base)} -type f"
+        ssh_cmd.extend([self.remote_target.host, find_cmd])
+
         try:
-            result = subprocess.run(ssh_cmd, capture_output=True, text=True)
-            return result.stdout.strip() == 'exists'
-        except subprocess.CalledProcessError:
-            return False
+            result = subprocess.run(ssh_cmd, capture_output=True, text=True, check=True)
+            self._remote_target_manifest = set(result.stdout.splitlines())
+            self.logger.info(
+                f"Remote target manifest: {len(self._remote_target_manifest)} files"
+            )
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Failed to build remote target manifest: {e}")
+            raise
 
     def execute_rsync(self, job: RsyncJob) -> bool:
         """Execute rsync for a given bucket of files"""
@@ -232,17 +239,13 @@ class ParallelRsync:
         # Check each file if it needs to be synced
         for source_file in job.source_files:
             relative_path = str(source_file)
-            target_path = (
-                f"{self.remote_target.path}/{relative_path}"
-                if self.is_remote_target
-                else f"{self.target}/{relative_path}"
-            )
-            
             should_sync = True
             if self.is_remote_target:
-                should_sync = not self._check_remote_file_exists(target_path, job)
+                base = self.remote_target.path.rstrip('/')
+                target_path = f"{base}/{relative_path}"
+                should_sync = target_path not in self._remote_target_manifest
             else:
-                target_file = Path(target_path)
+                target_file = Path(self.target) / relative_path
                 should_sync = not target_file.exists()
             
             if should_sync:
@@ -324,6 +327,9 @@ class ParallelRsync:
         """Run the parallel rsync operation"""
         start_time = time.time()
         self.scan_and_distribute()
+
+        if self.is_remote_target:
+            self._build_remote_target_manifest()
 
         jobs = []
         for i, bucket in enumerate(self.buckets):
