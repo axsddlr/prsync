@@ -410,7 +410,7 @@ def main():
             target=args.target,
             parallel_jobs=args.jobs,
             bucket_size_mb=args.bucket_size,
-            rsync_args=args.rsync_args.split(),
+            rsync_args=shlex.split(args.rsync_args),
         )
 
         parallel_rsync.run()
