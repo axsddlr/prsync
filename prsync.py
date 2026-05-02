@@ -118,6 +118,12 @@ class ParallelRsync:
         self.remote_target = RemoteTarget.parse(target)
         self.is_remote_source = bool(self.remote_source)
         self.is_remote_target = bool(self.remote_target)
+
+        if self.is_remote_source and self.is_remote_target:
+            raise ValueError(
+                "Remote-to-remote transfers are not supported. "
+                "Source and target cannot both be remote hosts."
+            )
         self.parallel_jobs = parallel_jobs
         self.bucket_size_mb = bucket_size_mb
         self.rsync_args = rsync_args if rsync_args else []
