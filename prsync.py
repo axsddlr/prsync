@@ -303,7 +303,7 @@ class ParallelRsync:
         bucket_file_list = tmpfile.name
 
         try:
-            tmpfile.write("\n".join(files_to_sync))
+            tmpfile.write("\0".join(files_to_sync))
             tmpfile.close()
 
             cmd = ["rsync"] + job.rsync_args
@@ -327,6 +327,7 @@ class ParallelRsync:
             cmd.extend(
                 [
                     "--files-from=" + bucket_file_list,
+                    "--from0",
                     source_path,
                     job.target,
                 ]
@@ -336,26 +337,24 @@ class ParallelRsync:
 
             process = subprocess.Popen(
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                universal_newlines=True,
+                stdout=subprocess.DEVNULL,
+                stderr=None,
             )
             self._active_processes.append(process)
             try:
-                _, stderr = process.communicate(timeout=RSYNC_TIMEOUT)
+                process.wait(timeout=RSYNC_TIMEOUT)
             except subprocess.TimeoutExpired:
                 self.logger.error(f"Rsync timed out for job {job.job_id}")
                 process.kill()
-                _, stderr = process.communicate()
-                self.failed_transfers.put((job, stderr))
+                process.wait()
+                self.failed_transfers.put((job, "timeout"))
                 return False
             finally:
                 self._active_processes.remove(process)
 
             if process.returncode != 0:
                 self.logger.error(f"Rsync failed for job {job.job_id}")
-                self.logger.error(f"stderr: {stderr}")
-                self.failed_transfers.put((job, stderr))
+                self.failed_transfers.put((job, f"exit code {process.returncode}"))
                 return False
 
             with self.progress_lock:
