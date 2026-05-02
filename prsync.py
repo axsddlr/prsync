@@ -15,6 +15,7 @@ from threading import Lock
 import re
 import atexit
 import shlex
+import shutil
 import tempfile
 
 
@@ -87,7 +88,7 @@ class RemoteTarget:
 
             if os.path.exists(os.path.dirname(self.control_path)):
                 try:
-                    os.rmdir(os.path.dirname(self.control_path))
+                    shutil.rmtree(os.path.dirname(self.control_path))
                 except OSError:
                     pass
 
@@ -239,7 +240,6 @@ class ParallelRsync:
 
     def execute_rsync(self, job: RsyncJob) -> bool:
         """Execute rsync for a given bucket of files"""
-        bucket_file_list = f".rsync_filelist_{job.job_id}"
         files_to_sync = []
         
         # Check each file if it needs to be synced
@@ -266,10 +266,16 @@ class ParallelRsync:
         
         if not files_to_sync:
             return True
-            
+
+        tmpfile = tempfile.NamedTemporaryFile(
+            mode="w", prefix="rsync_filelist_", suffix=f"_{job.job_id}",
+            delete=False
+        )
+        bucket_file_list = tmpfile.name
+
         try:
-            with open(bucket_file_list, "w") as f:
-                f.write("\n".join(files_to_sync))
+            tmpfile.write("\n".join(files_to_sync))
+            tmpfile.close()
 
             cmd = ["rsync"] + job.rsync_args
 
@@ -325,7 +331,7 @@ class ParallelRsync:
 
         finally:
             try:
-                os.remove(bucket_file_list)
+                os.unlink(bucket_file_list)
             except OSError:
                 pass
 
