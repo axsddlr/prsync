@@ -459,10 +459,18 @@ def main():
         dest="log_level",
         help="Suppress informational output"
     )
+    parser.add_argument(
+        "-n", "--dry-run", action="store_true",
+        help="Perform a trial run with no changes made"
+    )
 
     args = parser.parse_args()
 
     setup_logging(level=args.log_level)
+
+    rsync_args = shlex.split(args.rsync_args)
+    if args.dry_run:
+        rsync_args.append("-n")
 
     try:
         parallel_rsync = ParallelRsync(
@@ -470,7 +478,7 @@ def main():
             target=args.target,
             parallel_jobs=args.jobs,
             bucket_size_mb=args.bucket_size,
-            rsync_args=shlex.split(args.rsync_args),
+            rsync_args=rsync_args,
         )
 
         parallel_rsync.run()
