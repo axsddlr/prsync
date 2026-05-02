@@ -306,7 +306,7 @@ class ParallelRsync:
                 return False
 
             with self.progress_lock:
-                self.completed_files += len(job.source_files)
+                self.completed_files += len(files_to_sync)
                 progress = (self.completed_files / self.total_files) * 100
                 self.logger.info(
                     f"Progress: {progress:.1f}% ({self.completed_files}/{self.total_files})"
