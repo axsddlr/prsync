@@ -44,15 +44,21 @@ class RemoteTarget:
             return f"{self.user}@{self.host}:{self.path}"
         return f"{self.host}:{self.path}"
 
+    def ssh_base_args(self) -> List[str]:
+        """Return base SSH arguments including user and control path if available"""
+        args = ["ssh"]
+        if self.control_path:
+            args.extend(["-o", f"ControlPath={self.control_path}"])
+        if self.user:
+            args.extend(["-l", self.user])
+        return args
+
     def setup_ssh_multiplexing(self):
         """Setup SSH connection multiplexing"""
         temp_dir = tempfile.mkdtemp(prefix="rsync_ssh_")
         self.control_path = os.path.join(temp_dir, "control_%h_%p_%r")
 
-        ssh_cmd = ["ssh"]
-        if self.user:
-            ssh_cmd.extend(["-l", self.user])
-
+        ssh_cmd = self.ssh_base_args()
         ssh_cmd.extend(
             [
                 "-nNf",
@@ -78,12 +84,9 @@ class RemoteTarget:
     def cleanup_ssh_multiplexing(self):
         """Cleanup SSH multiplexing connection"""
         if self.control_path:
-            ssh_cmd = ["ssh"]
-            if self.user:
-                ssh_cmd.extend(["-l", self.user])
-
+            ssh_cmd = self.ssh_base_args()
             ssh_cmd.extend(
-                ["-O", "exit", "-o", f"ControlPath={self.control_path}", self.host]
+                ["-O", "exit", self.host]
             )
 
             try:
@@ -173,11 +176,7 @@ class ParallelRsync:
 
     def _get_remote_file_list(self, remote: RemoteTarget) -> List[Tuple[str, int]]:
         """Get list of files and sizes from remote host"""
-        ssh_cmd = ["ssh"]
-        if remote.control_path:
-            ssh_cmd.extend(["-o", f"ControlPath={remote.control_path}"])
-        if remote.user:
-            ssh_cmd.extend(["-l", remote.user])
+        ssh_cmd = remote.ssh_base_args()
         
         # Use find to get file paths and sizes
         find_cmd = f"find {shlex.quote(remote.path)} -type f -printf '%s %P\\n'"
@@ -238,11 +237,7 @@ class ParallelRsync:
     def _build_remote_target_manifest(self):
         """Build a set of all file paths on the remote target for O(1) existence checks"""
         base = self.remote_target.path.rstrip('/')
-        ssh_cmd = ["ssh"]
-        if self.remote_target.control_path:
-            ssh_cmd.extend(["-o", f"ControlPath={self.remote_target.control_path}"])
-        if self.remote_target.user:
-            ssh_cmd.extend(["-l", self.remote_target.user])
+        ssh_cmd = self.remote_target.ssh_base_args()
         find_cmd = f"find {shlex.quote(base)} -type f"
         ssh_cmd.extend([self.remote_target.host, find_cmd])
 
@@ -318,13 +313,13 @@ class ParallelRsync:
 
             # Configure SSH for remote source
             if self.is_remote_source and self.remote_source.control_path:
-                ssh_cmd = f"ssh -o ControlPath={self.remote_source.control_path}"
-                cmd.extend(["-e", ssh_cmd])
+                rsh = " ".join(self.remote_source.ssh_base_args())
+                cmd.extend(["--rsh", rsh])
 
             # Configure SSH for remote target
             if self.is_remote_target and self.remote_target.control_path:
-                ssh_cmd = f"ssh -o ControlPath={self.remote_target.control_path}"
-                cmd.extend(["-e", ssh_cmd])
+                rsh = " ".join(self.remote_target.ssh_base_args())
+                cmd.extend(["--rsh", rsh])
 
             source_path = (
                 f"{str(self.remote_source)}/"
