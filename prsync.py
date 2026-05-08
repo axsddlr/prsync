@@ -212,7 +212,7 @@ class ParallelRsync:
             source_base = Path(self.source).resolve()
             if not source_base.exists():
                 raise ValueError(f"Source directory does not exist: {source_base}")
-            
+
             files = []
             for root, _, filenames in os.walk(source_base, onerror=lambda err: self.logger.error(
                 f"Error walking directory: {err}"
@@ -224,10 +224,7 @@ class ParallelRsync:
                     except OSError as e:
                         self.logger.error(f"Error accessing file {filepath}: {e}")
 
-        # Sort files by size descending for better bucket packing
-        files.sort(key=lambda f: f[1], reverse=True)
-
-        # Sort files by size descending so large files claim their own bucket first
+        # Sort by size descending so large files claim their own bucket first
         files.sort(key=lambda f: f[1], reverse=True)
 
         for filepath, file_size in files:
@@ -250,6 +247,9 @@ class ParallelRsync:
 
         if self.current_bucket:
             self.buckets.append([path for path, _ in self.current_bucket])
+
+        # Free the file list now that buckets are built
+        del files
 
         self.logger.info(
             f"Found {self.total_files} files in {len(self.buckets)} buckets"
