@@ -224,8 +224,22 @@ class ParallelRsync:
                     except OSError as e:
                         self.logger.error(f"Error accessing file {filepath}: {e}")
 
+        # Sort files by size descending for better bucket packing
+        files.sort(key=lambda f: f[1], reverse=True)
+
+        # Sort files by size descending so large files claim their own bucket first
+        files.sort(key=lambda f: f[1], reverse=True)
+
         for filepath, file_size in files:
             self.total_files += 1
+            # Files larger than bucket size get their own bucket
+            if file_size >= (self.bucket_size_mb * 1024 * 1024):
+                if self.current_bucket:
+                    self.buckets.append([path for path, _ in self.current_bucket])
+                    self.current_bucket = []
+                    self.current_bucket_size = 0
+                self.buckets.append([filepath])
+                continue
             self.current_bucket.append((filepath, file_size))
             self.current_bucket_size += file_size
 
