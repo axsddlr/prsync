@@ -35,6 +35,8 @@ class RemoteTarget:
     @classmethod
     def parse(cls, target: str) -> Optional["RemoteTarget"]:
         """Parse a target string like 'user@host:/path' or 'host:/path'"""
+        if os.name == "nt" and len(target) >= 2 and target[1] == ":":
+            return None
         match = re.match(r"^(?:([^@]+)@)?([^:]+):(.+)$", target)
         if match:
             user, host, path = match.groups()
