@@ -22,6 +22,7 @@ import traceback
 
 SSH_TIMEOUT = 300  # 5 minutes for SSH commands
 RSYNC_TIMEOUT = 3600  # 1 hour for rsync transfers
+RETRY_BACKOFF = [2, 4, 8]  # seconds between retries
 
 
 @dataclass
@@ -121,6 +122,7 @@ class ParallelRsync:
         parallel_jobs: int = 4,
         bucket_size_mb: int = 1000,
         rsync_args: Optional[List[str]] = None,
+        retry_count: int = 3,
     ):
         self.source = source_dir
         self.target = target
@@ -137,6 +139,7 @@ class ParallelRsync:
         self.parallel_jobs = parallel_jobs
         self.bucket_size_mb = bucket_size_mb
         self.rsync_args = rsync_args if rsync_args else []
+        self.retry_count = retry_count
 
         # Setup SSH multiplexing for remote source
         if self.is_remote_source:
@@ -303,81 +306,81 @@ class ParallelRsync:
         if not files_to_sync:
             return True
 
-        tmpfile = tempfile.NamedTemporaryFile(
-            mode="w", prefix="rsync_filelist_", suffix=f"_{job.job_id}",
-            delete=False
-        )
-        bucket_file_list = tmpfile.name
+        last_error: Optional[str] = None
+        for attempt in range(self.retry_count):
+            if attempt > 0:
+                delay = RETRY_BACKOFF[min(attempt - 1, len(RETRY_BACKOFF) - 1)]
+                self.logger.warning(
+                    f"Retrying job {job.job_id} in {delay}s (attempt {attempt + 1}/{self.retry_count})"
+                )
+                time.sleep(delay)
 
-        try:
-            tmpfile.write("\0".join(files_to_sync))
-            tmpfile.close()
-
-            cmd = ["rsync"] + job.rsync_args
-
-            # Configure SSH for remote source
-            if self.is_remote_source and self.remote_source.control_path:
-                rsh = " ".join(self.remote_source.ssh_base_args())
-                cmd.extend(["--rsh", rsh])
-
-            # Configure SSH for remote target
-            if self.is_remote_target and self.remote_target.control_path:
-                rsh = " ".join(self.remote_target.ssh_base_args())
-                cmd.extend(["--rsh", rsh])
-
-            source_path = (
-                f"{str(self.remote_source)}/"
-                if self.is_remote_source
-                else f"{str(job.source_base)}/"
+            tmpfile = tempfile.NamedTemporaryFile(
+                mode="w", prefix="rsync_filelist_", suffix=f"_{job.job_id}",
+                delete=False
             )
+            bucket_file_list = tmpfile.name
 
-            cmd.extend(
-                [
-                    "--files-from=" + bucket_file_list,
-                    "--from0",
-                    source_path,
-                    job.target,
-                ]
-            )
-
-            self.logger.debug(f"Executing rsync command: {' '.join(cmd)}")
-
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=None,
-            )
-            self._active_processes.append(process)
             try:
-                process.wait(timeout=RSYNC_TIMEOUT)
-            except subprocess.TimeoutExpired:
-                self.logger.error(f"Rsync timed out for job {job.job_id}")
-                process.kill()
-                process.wait()
-                self.failed_transfers.put((job, "timeout"))
-                return False
-            finally:
-                self._active_processes.remove(process)
+                tmpfile.write("\0".join(files_to_sync))
+                tmpfile.close()
 
-            if process.returncode != 0:
-                self.logger.error(f"Rsync failed for job {job.job_id}")
-                self.failed_transfers.put((job, f"exit code {process.returncode}"))
-                return False
+                cmd = ["rsync"] + job.rsync_args
 
-            with self.progress_lock:
-                self.completed_files += len(files_to_sync)
-                progress = (self.completed_files / self.total_files) * 100
-                self.logger.info(
-                    f"Progress: {progress:.1f}% ({self.completed_files}/{self.total_files})"
+                if self.is_remote_source and self.remote_source.control_path:
+                    rsh = " ".join(self.remote_source.ssh_base_args())
+                    cmd.extend(["--rsh", rsh])
+
+                if self.is_remote_target and self.remote_target.control_path:
+                    rsh = " ".join(self.remote_target.ssh_base_args())
+                    cmd.extend(["--rsh", rsh])
+
+                source_path = (
+                    f"{str(self.remote_source)}/"
+                    if self.is_remote_source
+                    else f"{str(job.source_base)}/"
                 )
 
-            return True
+                cmd.extend(["--files-from=" + bucket_file_list, "--from0", source_path, job.target])
 
-        finally:
-            try:
-                os.unlink(bucket_file_list)
-            except OSError:
-                pass
+                self.logger.debug(f"Executing rsync command: {' '.join(cmd)}")
+
+                process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=None)
+                self._active_processes.append(process)
+                try:
+                    process.wait(timeout=RSYNC_TIMEOUT)
+                except subprocess.TimeoutExpired:
+                    last_error = "timeout"
+                    self.logger.error(f"Rsync timed out for job {job.job_id}")
+                    process.kill()
+                    process.wait()
+                    continue
+                finally:
+                    self._active_processes.remove(process)
+
+                if process.returncode != 0:
+                    last_error = f"exit code {process.returncode}"
+                    self.logger.error(f"Rsync failed for job {job.job_id} ({last_error})")
+                    continue
+
+                with self.progress_lock:
+                    self.completed_files += len(files_to_sync)
+                    progress = (self.completed_files / self.total_files) * 100
+                    self.logger.info(
+                        f"Progress: {progress:.1f}% ({self.completed_files}/{self.total_files})"
+                    )
+
+                return True
+
+            finally:
+                try:
+                    os.unlink(bucket_file_list)
+                except OSError:
+                    pass
+
+        self.failed_transfers.put((job, last_error or "unknown"))
+        self.logger.error(f"Job {job.job_id} failed after {self.retry_count} attempts")
+        return False
 
     def run(self):
         """Run the parallel rsync operation"""
@@ -469,6 +472,10 @@ def main():
         "-n", "--dry-run", action="store_true",
         help="Perform a trial run with no changes made"
     )
+    parser.add_argument(
+        "--retry", type=int, default=3,
+        help="Number of retry attempts for failed bucket transfers (default: 3)"
+    )
 
     args = parser.parse_args()
 
@@ -485,6 +492,7 @@ def main():
             parallel_jobs=args.jobs,
             bucket_size_mb=args.bucket_size,
             rsync_args=rsync_args,
+            retry_count=args.retry,
         )
 
         parallel_rsync.run()
